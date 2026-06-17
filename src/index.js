@@ -1,9 +1,18 @@
+const http = require("http");
+
+const port = process.env.PORT || 3000;
+
 function hello() {
-    return "Hello World!";
+  return "Hello World!";
 }
 
-if (require.main === module) {
-    console.log(hello());
-}
+const server = http.createServer((req, res) => {
+  res.writeHead(200, { "Content-Type": "text/plain" });
+  res.end(hello());
+});
 
-module.exports = hello;
+server.listen(port, () => {
+  console.log(`Server running on port ${port}`);
+});
+
+module.exports = { hello };

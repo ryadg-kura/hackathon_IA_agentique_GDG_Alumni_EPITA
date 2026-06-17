@@ -19,8 +19,5 @@
     "start": "node src/index.js",
     "test": "jest",
     "deploy": "echo Deploy OK"
-  },
-  "devDependencies": {
-    "jest": "^30.0.0"
   }
 }

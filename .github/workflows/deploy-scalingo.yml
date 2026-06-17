@@ -36,23 +36,33 @@ jobs:
         id: meta
         run: |
           set -euo pipefail
+
           region="${SCALINGO_APP_REGION:?missing SCALINGO_APP_REGION secret}"
+          app="${SCALINGO_APP_NAME:?missing SCALINGO_APP_NAME secret}"
+
           api_host="api.${region}.scalingo.com"
+
           ref="${{ github.event.inputs.git_ref }}"
-          if [ -z "$ref" ]; then ref="${GITHUB_SHA}"; fi
+          if [ -z "$ref" ]; then
+            ref="${GITHUB_SHA}"
+          fi
+
           echo "api_host=${api_host}" >> "$GITHUB_OUTPUT"
-          echo "git_ref=${ref}"       >> "$GITHUB_OUTPUT"
-          echo "Deploying ${ref} to ${SCALINGO_APP_NAME} via ${api_host}"
+          echo "git_ref=${ref}" >> "$GITHUB_OUTPUT"
+
+          echo "Deploying ${ref} to ${app} via ${api_host}"
 
       - name: Create source tarball
         id: tarball
         run: |
           set -euo pipefail
+
           archive="/tmp/${SCALINGO_APP_NAME}-${GITHUB_SHA}.tar.gz"
           tmpdir="$(mktemp -d)"
+
           mkdir -p "$tmpdir/app"
 
-          rsync -a . "$tmpdir/app" \
+          rsync -a ./ "$tmpdir/app/" \
             --exclude='.git' \
             --exclude='.github' \
             --exclude='node_modules' \
@@ -64,7 +74,10 @@ jobs:
 
           tar -C "$tmpdir" -czf "$archive" app
 
+          echo "Archive content:"
           tar -tzf "$archive" | head -50
+
+          echo "Archive size:"
           ls -lh "$archive"
 
           echo "path=${archive}" >> "$GITHUB_OUTPUT"
@@ -73,13 +86,17 @@ jobs:
         id: auth
         run: |
           set -euo pipefail
-          jwt="$(curl -fsSL -u ":${SCALINGO_API_TOKEN}" \
-                  -X POST https://auth.scalingo.com/v1/tokens/exchange \
-                  | jq -r .token)"
+
+          jwt="$(curl -fsSL \
+            -u ":${SCALINGO_API_TOKEN}" \
+            -X POST https://auth.scalingo.com/v1/tokens/exchange \
+            | jq -r .token)"
+
           if [ -z "$jwt" ] || [ "$jwt" = "null" ]; then
             echo "::error::Failed to exchange Scalingo API token"
             exit 1
           fi
+
           echo "::add-mask::$jwt"
           echo "jwt=${jwt}" >> "$GITHUB_OUTPUT"
 
@@ -87,67 +104,99 @@ jobs:
         id: source
         run: |
           set -euo pipefail
+
           resp="$(curl -fsSL \
             -H "Authorization: Bearer ${{ steps.auth.outputs.jwt }}" \
             -H "Accept: application/json" \
             -X POST "https://${{ steps.meta.outputs.api_host }}/v1/sources")"
+
           upload_url="$(echo "$resp" | jq -r '.source.upload_url')"
           download_url="$(echo "$resp" | jq -r '.source.download_url // .source.url')"
+
           if [ -z "$upload_url" ] || [ "$upload_url" = "null" ]; then
             echo "::error::No upload_url returned: $resp"
             exit 1
           fi
+
+          if [ -z "$download_url" ] || [ "$download_url" = "null" ]; then
+            echo "::error::No download_url returned: $resp"
+            exit 1
+          fi
+
           echo "::add-mask::$upload_url"
           echo "::add-mask::$download_url"
-          echo "upload_url=${upload_url}"     >> "$GITHUB_OUTPUT"
+
+          echo "upload_url=${upload_url}" >> "$GITHUB_OUTPUT"
           echo "download_url=${download_url}" >> "$GITHUB_OUTPUT"
 
       - name: Upload tarball to Scalingo source storage
         run: |
           set -euo pipefail
-          curl -fsSL --upload-file "${{ steps.tarball.outputs.path }}" \
-               "${{ steps.source.outputs.upload_url }}"
+
+          curl -fsSL \
+            -X PUT \
+            -H "Content-Type: application/x-gzip" \
+            --upload-file "${{ steps.tarball.outputs.path }}" \
+            "${{ steps.source.outputs.upload_url }}"
 
       - name: Trigger Scalingo deployment
         id: deploy
         run: |
           set -euo pipefail
+
           payload="$(jq -n \
-            --arg ref  "${{ steps.meta.outputs.git_ref }}" \
-            --arg src  "${{ steps.source.outputs.download_url }}" \
+            --arg ref "${{ steps.meta.outputs.git_ref }}" \
+            --arg src "${{ steps.source.outputs.download_url }}" \
             '{deployment:{git_ref:$ref, source_url:$src}}')"
+
           resp="$(curl -fsSL \
             -H "Authorization: Bearer ${{ steps.auth.outputs.jwt }}" \
             -H "Content-Type: application/json" \
             -H "Accept: application/json" \
             -X POST "https://${{ steps.meta.outputs.api_host }}/v1/apps/${SCALINGO_APP_NAME}/deployments" \
             -d "$payload")"
+
           dep_id="$(echo "$resp" | jq -r '.deployment.id')"
+
           if [ -z "$dep_id" ] || [ "$dep_id" = "null" ]; then
             echo "::error::Failed to create deployment: $resp"
             exit 1
           fi
+
           echo "deployment_id=${dep_id}" >> "$GITHUB_OUTPUT"
           echo "Created deployment ${dep_id}"
 
       - name: Poll deployment status
         run: |
           set -euo pipefail
+
           dep_id="${{ steps.deploy.outputs.deployment_id }}"
           api="https://${{ steps.meta.outputs.api_host }}/v1/apps/${SCALINGO_APP_NAME}/deployments/${dep_id}"
+
           for i in $(seq 1 120); do
-            status="$(curl -fsSL \
+            resp="$(curl -fsSL \
               -H "Authorization: Bearer ${{ steps.auth.outputs.jwt }}" \
               -H "Accept: application/json" \
-              "$api" | jq -r '.deployment.status')"
+              "$api")"
+
+            status="$(echo "$resp" | jq -r '.deployment.status')"
+
             echo "[${i}] status=${status}"
+
             case "$status" in
-              success) echo "Deployment succeeded."; exit 0 ;;
+              success)
+                echo "Deployment succeeded."
+                exit 0
+                ;;
               error|aborted|build-error|crashed-error|hook-error|timeout-error)
+                echo "$resp" | jq .
                 echo "::error::Deployment finished with status=${status}"
-                exit 1 ;;
+                exit 1
+                ;;
             esac
+
             sleep 10
           done
+
           echo "::error::Timed out waiting for deployment ${dep_id}"
           exit 1

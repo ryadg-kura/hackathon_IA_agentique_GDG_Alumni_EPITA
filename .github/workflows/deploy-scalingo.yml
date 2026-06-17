@@ -49,18 +49,24 @@ jobs:
         run: |
           set -euo pipefail
           archive="/tmp/${SCALINGO_APP_NAME}-${GITHUB_SHA}.tar.gz"
-          # Exclude VCS / CI / local-only noise; let Scalingo's Node buildpack
-          # install dependencies during the release phase.
-          tar --exclude-vcs \
-              --exclude='./.github' \
-              --exclude='./node_modules' \
-              --exclude='./.env' \
-              --exclude='./.env.*' \
-              --exclude='./coverage' \
-              --exclude='./dist' \
-              --exclude='./build' \
-              -czf "${archive}" .
-          ls -lh "${archive}"
+          tmpdir="$(mktemp -d)"
+          mkdir -p "$tmpdir/app"
+
+          rsync -a . "$tmpdir/app" \
+            --exclude='.git' \
+            --exclude='.github' \
+            --exclude='node_modules' \
+            --exclude='.env' \
+            --exclude='.env.*' \
+            --exclude='coverage' \
+            --exclude='dist' \
+            --exclude='build'
+
+          tar -C "$tmpdir" -czf "$archive" app
+
+          tar -tzf "$archive" | head -50
+          ls -lh "$archive"
+
           echo "path=${archive}" >> "$GITHUB_OUTPUT"
 
       - name: Exchange API token for bearer JWT

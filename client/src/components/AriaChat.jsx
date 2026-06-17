@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import Aria from './Aria.jsx'
 import ChatMessage from './ChatMessage.jsx'
-import LetterModal from './LetterModal.jsx'
 
 const SPECIALITES = [
   'Mathematiques', 'NSI', 'Physique-Chimie', 'SVT',
@@ -100,33 +99,26 @@ function parseSSEChunk(raw) {
   return events
 }
 
-export default function AriaChat() {
+export default function AriaChat({ onComplete }) {
   const [phase, setPhase] = useState('intro')  // intro | collecting | running | done
   const [qIndex, setQIndex] = useState(0)
   const [profile, setProfile] = useState({ notes: {}, contraintes: {}, specialites: [] })
   const [messages, setMessages] = useState([])
-  const [letters, setLetters] = useState({})
   const [ariaState, setAriaState] = useState('idle')
   const [inputVal, setInputVal] = useState('')
   const [chips, setChips] = useState([])
-  const [selectedCard, setSelectedCard] = useState(null)
   const [agentLabel, setAgentLabel] = useState('')
   const bottomRef = useRef(null)
   const bufferRef = useRef('')
+  const introFired = useRef(false)
 
-  // Message helpers
   const addMsg = (msg) => setMessages(prev => [...prev, { id: Date.now() + Math.random(), ...msg }])
 
-  const ariaSpeak = (text, delay = 0) => {
-    setTimeout(() => {
-      setAriaState('talking')
-      addMsg({ from: 'aria', type: 'text', text })
-      setTimeout(() => setAriaState('idle'), Math.min(text.length * 30, 2500))
-    }, delay)
-  }
-
-  // Intro
+  // Intro — ref guard pour eviter la double execution en StrictMode
   useEffect(() => {
+    if (introFired.current) return
+    introFired.current = true
+
     setTimeout(() => {
       setAriaState('excited')
       setTimeout(() => {
@@ -252,26 +244,19 @@ export default function AriaChat() {
         break
 
       case 'card_placed':
-        setTimeout(() => {
-          addMsg({
-            from: 'aria',
-            type: 'formation',
-            formation: data.formation,
-            category: data.category,
-          })
-        }, Math.random() * 300)
+        // Les cartes s'affichent sur la page resultats, pas dans le chat
         break
 
       case 'letter_token':
-        setLetters(prev => ({
-          ...prev,
-          [data.formationId]: (prev[data.formationId] ?? '') + data.token,
-        }))
+        // Accumule en memoire, transmis a la page resultats via complete
         break
 
       case 'complete':
-        setPhase('done')
-        setAriaState('idle')
+        setAriaState('excited')
+        addMsg({ from: 'aria', type: 'text', text: 'Analyse terminee. Je t\'amene voir ta strategie.' })
+        setTimeout(() => {
+          onComplete({ strategy: data.strategy, letters: data.letters, profile })
+        }, 1400)
         break
 
       case 'error':
@@ -414,15 +399,6 @@ export default function AriaChat() {
         )}
       </div>
 
-      {/* Letter modal */}
-      {selectedCard && (
-        <LetterModal
-          formation={selectedCard.formation}
-          category={selectedCard.category}
-          letter={letters[selectedCard.formation.id]}
-          onClose={() => setSelectedCard(null)}
-        />
-      )}
     </div>
   )
 }
